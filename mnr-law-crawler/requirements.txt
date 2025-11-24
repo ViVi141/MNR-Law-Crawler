@@ -1,0 +1,29 @@
+# MNR Law Crawler (自然资源部法规爬虫工具) v1.0 - 依赖清单
+
+# 核心依赖
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# 文档处理
+python-docx>=1.1.0
+pypdf>=3.0.0
+
+# 可选依赖（文档转换）
+mammoth>=1.6.0
+poword>=0.0.17
+
+# 代理支持（可选）
+kdl>=0.2.21
+
+# 打包工具（可选，用于打包exe）
+pyinstaller>=5.13.0
+
+# GUI支持（Python内置，无需安装）
+# tkinter
+
+# 说明：
+# - tkinter 是Python内置库，无需额外安装
+# - kdl 是快代理SDK，如不使用代理可不安装
+# - mammoth 和 poword 用于增强文档转换，可选安装
+# - pyinstaller 用于打包成exe文件，仅在打包时需要
+
