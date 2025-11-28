@@ -1,0 +1,57 @@
+MNR Law Crawler (自然资源部法规爬虫工具) v1.0
+使用说明
+========================================
+
+一、文件说明
+-----------
+1. MNR-Law-Crawler.exe - 主程序（可执行文件）
+2. config.json.example - 配置文件模板
+3. config.json - 配置文件（首次运行会自动创建，或手动复制模板）
+
+二、首次使用
+-----------
+1. 将 MNR-Law-Crawler.exe 和 config.json.example 放在同一目录
+2. 复制 config.json.example 为 config.json
+3. 根据需要修改 config.json 中的配置（可选）
+4. 双击运行 MNR-Law-Crawler.exe
+
+三、配置说明
+-----------
+主要配置项：
+- base_url: 网站基础URL（默认：https://f.mnr.gov.cn/）
+- channel_id: 频道ID（默认：174757）
+- perpage: 每页数量（默认：20）
+- timeout: 请求超时时间（默认：30秒）
+- request_delay: 请求延迟（默认：2秒）
+- output_dir: 输出目录（默认：crawled_data）
+
+四、输出文件
+-----------
+程序会在当前目录下创建 crawled_data 文件夹，包含：
+- json/ - JSON格式的政策数据
+- markdown/ - RAG格式的Markdown文件（含YAML Front Matter）
+- docx/ - Word文档格式
+- files/ - 下载的附件文件
+
+五、功能特性
+-----------
+- GUI图形界面，操作简单
+- 自动爬取政策法规数据
+- 智能清洗HTML内容
+- 完整提取元信息（发布日期、发布机构、效力级别等）
+- 支持多数据源配置
+- 实时显示爬取进度
+
+六、注意事项
+-----------
+1. 首次运行需要网络连接
+2. 建议设置合理的请求延迟，避免对服务器造成压力
+3. 爬取大量数据时，建议分批进行
+4. 如遇到问题，可查看程序运行日志
+
+七、技术支持
+-----------
+- 项目地址: https://github.com/ViVi141/mnr-law-crawler
+- 版本: 1.0.0
+- 更新日期: 2025-11-28
+

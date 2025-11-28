@@ -15,19 +15,19 @@ class Config:
         # 数据源配置（支持多个网站）
         "data_sources": [
             {
-                "name": "政府信息公开平台",
-                "base_url": "https://gi.mnr.gov.cn/",
+                "name": "政策法规库",
+                "base_url": "https://f.mnr.gov.cn/",
                 "search_api": "https://search.mnr.gov.cn/was5/web/search",
                 "ajax_api": "https://search.mnr.gov.cn/was/ajaxdata_jsonp.jsp",
-                "channel_id": "216640",
+                "channel_id": "174757",
                 "enabled": True
             }
         ],
         # 兼容旧配置（向后兼容）
-        "base_url": "https://gi.mnr.gov.cn/",
+        "base_url": "https://f.mnr.gov.cn/",
         "search_api": "https://search.mnr.gov.cn/was5/web/search",
         "ajax_api": "https://search.mnr.gov.cn/was/ajaxdata_jsonp.jsp",
-        "channel_id": "216640",  # 政府信息公开平台的频道ID
+        "channel_id": "174757",  # 政策法规库的频道ID
         
         # 请求配置
         "request_delay": 2,

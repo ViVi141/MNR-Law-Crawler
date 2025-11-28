@@ -61,7 +61,7 @@ class PolicyCrawler:
         self.progress_callback = progress_callback
         self.stop_requested = False  # 停止标志
         self.progress = CrawlProgress()
-        self.base_url = config.get("base_url", "https://gi.mnr.gov.cn/")
+        self.base_url = config.get("base_url", "https://f.mnr.gov.cn/")
         
         # 创建输出目录
         self._create_output_dirs()
@@ -165,78 +165,183 @@ class PolicyCrawler:
         policies = []
         
         try:
-            # 查找政策列表 - 适配新的网站结构
-            table = soup.find('table', class_='table')
-            if not table:
+            # 查找政策列表 - 适配多个网站结构
+            # f.mnr.gov.cn的结构：每个政策是一个独立的表格（5行）
+            # 尝试查找所有表格
+            tables = soup.find_all('table')
+            
+            if not tables:
                 if callback:
-                    callback("未找到政策列表表格")
+                    callback("未找到任何表格")
                 return policies
             
-            # 查找所有政策行（跳过表头）
-            rows = table.find_all('tr')[1:]  # 跳过第一行表头
-            total_rows = len(rows)
+            # 对于f.mnr.gov.cn，每个政策是一个独立的表格
+            # 检查表格结构：如果表格只有几行（通常是5行），且第一行包含"标题"，则是一个政策表格
+            policy_tables = []
+            for table in tables:
+                rows = table.find_all('tr')
+                # 政策表格通常有2-10行，且第一行第一列包含"标题"
+                if len(rows) >= 2 and len(rows) <= 10:
+                    # 检查第一行第一列是否包含"标题"等关键词
+                    first_row = rows[0]
+                    first_row_cells = first_row.find_all(['td', 'th'])
+                    if len(first_row_cells) >= 1:
+                        first_cell_text = first_row_cells[0].get_text()
+                        # 直接检查原始文本中是否包含"标"和"题"字符，或"名称"（f.mnr.gov.cn使用"名称"）
+                        # 不进行lower，因为中文字符不需要
+                        has_biao = '标' in first_cell_text
+                        has_ti = '题' in first_cell_text
+                        has_title = '标题' in first_cell_text
+                        has_name = '名称' in first_cell_text or '名称' in first_cell_text.replace('\xa0', '').replace('\u00a0', '')
+                        
+                        # 也检查清理后的文本
+                        first_cell_clean = first_cell_text.replace('\xa0', '').replace('\u00a0', '').replace(' ', '').strip()
+                        has_biao_clean = '标' in first_cell_clean
+                        has_ti_clean = '题' in first_cell_clean
+                        has_title_clean = '标题' in first_cell_clean
+                        has_name_clean = '名称' in first_cell_clean
+                        
+                        if has_title or has_title_clean or (has_biao and has_ti) or (has_biao_clean and has_ti_clean) or has_name or has_name_clean:
+                            policy_tables.append(table)
+                            continue
+                    
+                    # 如果第一列检查失败，尝试检查第一行的所有文本
+                    first_row_text = first_row.get_text()
+                    has_biao_row = '标' in first_row_text
+                    has_ti_row = '题' in first_row_text
+                    if ('标题' in first_row_text) or (has_biao_row and has_ti_row):
+                        policy_tables.append(table)
+            
+            if not policy_tables:
+                if callback:
+                    callback(f"未找到政策表格（共检查了 {len(tables)} 个表格），尝试查找其他结构...")
+                    # 输出调试信息：检查前几个表格的结构
+                    for i, table in enumerate(tables[:5], 1):
+                        rows = table.find_all('tr')
+                        if rows:
+                            first_row = rows[0]
+                            first_cells = first_row.find_all(['td', 'th'])
+                            if first_cells:
+                                first_cell_text = first_cells[0].get_text()
+                                callback(f"  表格{i}: {len(rows)}行, 第一列: {repr(first_cell_text[:30])}")
+                
+                # 如果找不到表格，尝试更宽松的条件：接受所有2-10行的表格
+                if callback:
+                    callback("尝试使用更宽松的条件识别政策表格...")
+                for table in tables:
+                    rows = table.find_all('tr')
+                    if len(rows) >= 2 and len(rows) <= 10:
+                        # 检查表格中是否有链接（政策表格通常包含链接）
+                        links = table.find_all('a', href=True)
+                        if links:
+                            # 检查链接是否指向政策详情页
+                            for link in links:
+                                href = link.get('href', '')
+                                if href and not href.startswith('javascript') and ('html' in href or 'detail' in href or 'view' in href):
+                                    if table not in policy_tables:
+                                        policy_tables.append(table)
+                                    break
+                
+                if not policy_tables:
+                    # 如果还是找不到，尝试查找列表结构（ul/ol/div）
+                    list_containers = soup.find_all(['ul', 'ol', 'div'], class_=lambda x: x and ('list' in str(x).lower() or 'item' in str(x).lower()))
+                    if list_containers:
+                        if callback:
+                            callback(f"找到 {len(list_containers)} 个可能的列表容器")
+                        # 这里可以添加列表解析逻辑，但先返回空列表
+                        return policies
+                    return policies
+            
             if callback:
-                callback(f"HTML表格中找到 {total_rows} 行数据")
+                callback(f"找到 {len(policy_tables)} 个政策表格")
+            
+            total_tables = len(policy_tables)
             
             # 如果设置了最大数量，只处理前N条有效政策
             parsed_count = 0
             
-            for row in rows:
+            # 遍历每个政策表格
+            for table in policy_tables:
                 # 如果已达到最大数量，停止解析
                 if max_policies is not None and parsed_count >= max_policies:
                     break
+                
                 try:
-                    # 获取所有单元格
-                    cells = row.find_all('td')
-                    if len(cells) < 4:
+                    # 解析政策表格 - f.mnr.gov.cn的结构
+                    # 每个表格包含一个政策的详细信息，格式通常是：
+                    # 第1行: [标签, 标题] - 标题行
+                    # 第2行: [标签, 发文字号]
+                    # 第3行: [标签, 发布日期]
+                    # 第4行: [标签, 实施日期] (可选)
+                    # 第5行: [标签, 其他信息] (可选)
+                    
+                    rows = table.find_all('tr')
+                    if len(rows) < 2:
                         continue
                     
-                    # 检查是否是主政策行（不是详细信息行）
-                    first_cell = cells[0].get_text(strip=True)
-                    if not first_cell or first_cell in ['标    题', '索    引', '发文字号', '生成日期', '实施日期']:
-                        # 这是详细信息行，跳过
+                    # 初始化变量
+                    title = ''
+                    doc_number = ''
+                    pub_date = ''
+                    detail_url = ''
+                    level = '自然资源部'  # 默认值
+                    validity = ''  # 默认值
+                    
+                    # 遍历表格的每一行
+                    for row in rows:
+                        cells = row.find_all(['td', 'th'])
+                        if len(cells) < 2:
+                            continue
+                        
+                        label_raw = cells[0].get_text()
+                        label = label_raw.replace('\xa0', '').replace(' ', '').strip()  # 清理特殊字符
+                        value = cells[1].get_text(strip=True)
+                        
+                        # 根据标签提取信息（使用清理后的标签）
+                        # 支持"标题"和"名称"两种标签
+                        if '标题' in label or '名称' in label or 'title' in label.lower() or ('标' in label and '题' in label) or ('名' in label and '称' in label):
+                            title = value
+                            # 查找标题中的链接
+                            link = cells[1].find('a', href=True)
+                            if link:
+                                detail_url = link.get('href', '')
+                                # 如果标题为空，使用链接文本
+                                if not title:
+                                    title = link.get_text(strip=True)
+                        elif '发文字号' in label or '文号' in label or ('发' in label and '号' in label):
+                            doc_number = value
+                        elif ('成文时间' in label or '生成日期' in label or '发布日期' in label or '公布日期' in label) and not ('效力' in label or '级别' in label):
+                            # 验证值是否是日期格式（包含年月日）
+                            if any(keyword in value for keyword in ['年', '月', '日']) or len(value) >= 8:
+                                pub_date = value
+                        elif '实施日期' in label or '生效日期' in label or ('日期' in label and ('实施' in label or '生效' in label)):
+                            # 如果没有发布日期，使用实施日期
+                            if not pub_date:
+                                pub_date = value
+                        elif '发布机构' in label or '机构' in label:
+                            # 提取发布机构
+                            if value and value.strip():
+                                level = value
+                        elif '效力级别' in label or '级别' in label:
+                            # 提取效力级别
+                            if value and value.strip():
+                                validity = value
+                    
+                    # 如果标题为空，尝试从表格中查找所有链接
+                    if not title:
+                        links = table.find_all('a', href=True)
+                        for link in links:
+                            link_text = link.get_text(strip=True)
+                            link_href = link.get('href', '')
+                            # 跳过javascript链接
+                            if link_href and not link_href.startswith('javascript'):
+                                if len(link_text) > 5:  # 标题应该有一定长度
+                                    title = link_text
+                                    detail_url = link_href
+                                    break
+                    
+                    if not title:
                         continue
-                    
-                    # 检查是否是有效的政策索引号（应该包含年份和编号）
-                    if not first_cell or len(first_cell) < 4 or not first_cell[0].isdigit():
-                        continue
-                    
-                    # 解析表格数据 - 适配新结构
-                    title_cell = cells[1]
-                    doc_number = cells[2].get_text(strip=True)
-                    pub_date = cells[3].get_text(strip=True)
-                    
-                    # 获取标题和链接 - 新网站的结构
-                    title_link = title_cell.find('a', target='_blank')
-                    if not title_link:
-                        # 尝试其他方式查找链接
-                        title_link = title_cell.find('a')
-                    
-                    if not title_link:
-                        continue
-                    
-                    title = title_link.get_text(strip=True)
-                    detail_url = title_link.get('href', '')
-                    
-                    # 检查解析的数据是否合理
-                    if doc_number == "标    题" or pub_date == title:
-                        # 如果发文字号是"标    题"或发布日期是标题内容，说明解析到了详细信息
-                        # 尝试从详细信息中获取正确的数据
-                        detail_info = title_cell.find('div', class_='box')
-                        if detail_info:
-                            detail_table = detail_info.find('table')
-                            if detail_table:
-                                detail_rows = detail_table.find_all('tr')
-                                for detail_row in detail_rows:
-                                    detail_cells = detail_row.find_all('td')
-                                    if len(detail_cells) >= 2:
-                                        label = detail_cells[0].get_text(strip=True)
-                                        value = detail_cells[1].get_text(strip=True)
-                                        
-                                        if '发文字号' in label:
-                                            doc_number = value
-                                        elif '生成日期' in label:
-                                            pub_date = value
                     
                     # 构建完整链接
                     if detail_url and not detail_url.startswith('http'):
@@ -261,6 +366,8 @@ class PolicyCrawler:
                         url=detail_url,
                         content='',  # 初始为空，会在crawl_policies中填充
                         category=category_name,
+                        level=level,
+                        validity=validity,
                         crawl_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     )
                     # 保存数据源信息到policy对象（通过添加自定义属性）
@@ -276,7 +383,7 @@ class PolicyCrawler:
             
             # 统计信息
             if callback:
-                callback(f"成功解析 {len(policies)} 条政策（从 {total_rows} 行中）")
+                callback(f"成功解析 {len(policies)} 条政策（从 {total_tables} 个表格中）")
                     
         except Exception as e:
             if callback:
@@ -313,9 +420,9 @@ class PolicyCrawler:
             # 如果没有配置数据源列表，使用默认配置（向后兼容）
             data_sources = [{
                 "name": "默认数据源",
-                "base_url": self.config.get("base_url", "https://gi.mnr.gov.cn/"),
+                "base_url": self.config.get("base_url", "https://f.mnr.gov.cn/"),
                 "search_api": self.config.get("search_api", "https://search.mnr.gov.cn/was5/web/search"),
-                "channel_id": self.config.get("channel_id", "216640"),
+                "channel_id": self.config.get("channel_id", "174757"),
                 "enabled": True
             }]
         
@@ -338,6 +445,7 @@ class PolicyCrawler:
                 callback(f"{'='*60}")
             
             policies = []
+            local_seen_ids = set()  # 用于当前数据源内部去重
             page = 1
             if limit_pages is not None:
                 max_pages = limit_pages
@@ -351,85 +459,89 @@ class PolicyCrawler:
                     if callback:
                         callback("停止搜索")
                     break
-            
-            if callback:
-                callback(f"正在抓取第{page}页...")
-            
-            try:
-                result = self.api_client.search_policies(keywords, page, start_date, end_date, data_source)
                 
-                # 解析结果
-                page_policies = []
-                requested_perpage = self.config.get("perpage", 20)
+                if callback:
+                    callback(f"正在抓取第{page}页...")
                 
-                if not result:
-                    # API请求失败或无响应
-                    consecutive_empty_pages += 1
-                    if callback:
-                        callback(f"第{page}页API请求失败或无响应")
-                else:
-                    # 解析响应数据
-                    if result['type'] == 'json':
-                        page_policies = self._parse_json_results(result['data'], callback)
-                        if callback:
-                            callback(f"JSON解析: 请求{requested_perpage}条，实际返回{len(page_policies)}条")
-                    elif result['type'] == 'html':
-                        soup = BeautifulSoup(result['data'], 'html.parser')
-                        # 限制解析数量为请求的perpage值（因为API返回的行数可能是perpage的倍数）
-                        page_policies = self._parse_html_results(soup, callback, '全部', max_policies=requested_perpage, data_source=data_source)
-                        if callback:
-                            callback(f"HTML解析: 请求{requested_perpage}条，实际解析{len(page_policies)}条")
-                
-                # 检查是否解析出政策
-                if not page_policies or len(page_policies) == 0:
-                    consecutive_empty_pages += 1
-                    if callback:
-                        callback(f"第{page}页无数据（解析出0条政策），连续空页数: {consecutive_empty_pages}/{max_empty_pages}")
+                try:
+                    result = self.api_client.search_policies(keywords, page, start_date, end_date, data_source)
                     
-                    # 检查是否达到连续空页限制
-                    if consecutive_empty_pages >= max_empty_pages:
-                        if callback:
-                            callback(f"连续{max_empty_pages}页无数据，停止爬取")
-                        break
+                    # 解析结果
+                    page_policies = []
+                    requested_perpage = self.config.get("perpage", 20)
                     
-                    # 继续下一页
+                    if not result:
+                        # API请求失败或无响应
+                        consecutive_empty_pages += 1
+                        if callback:
+                            callback(f"第{page}页API请求失败或无响应")
+                    else:
+                        # 解析响应数据
+                        if result['type'] == 'json':
+                            page_policies = self._parse_json_results(result['data'], callback)
+                            if callback:
+                                callback(f"JSON解析: 请求{requested_perpage}条，实际返回{len(page_policies)}条")
+                        elif result['type'] == 'html':
+                            soup = BeautifulSoup(result['data'], 'html.parser')
+                            # 限制解析数量为请求的perpage值（因为API返回的行数可能是perpage的倍数）
+                            page_policies = self._parse_html_results(soup, callback, '全部', max_policies=requested_perpage, data_source=data_source)
+                            if callback:
+                                callback(f"HTML解析: 请求{requested_perpage}条，实际解析{len(page_policies)}条")
+                    
+                    # 检查是否解析出政策
+                    if not page_policies or len(page_policies) == 0:
+                        consecutive_empty_pages += 1
+                        if callback:
+                            callback(f"第{page}页无数据（解析出0条政策），连续空页数: {consecutive_empty_pages}/{max_empty_pages}")
+                        
+                        # 检查是否达到连续空页限制
+                        if consecutive_empty_pages >= max_empty_pages:
+                            if callback:
+                                callback(f"连续{max_empty_pages}页无数据，停止爬取")
+                            break
+                        
+                        # 继续下一页
+                        page += 1
+                        continue
+                    else:
+                        # 有数据，重置连续空页计数
+                        consecutive_empty_pages = 0
+                    
+                    # 去重并添加到结果（使用本地seen_ids，避免与全局seen_ids冲突）
+                    new_policies_count = 0
+                    for policy in page_policies:
+                        policy_id = policy.id
+                        # 先检查本地seen_ids（当前数据源内部去重）
+                        if policy_id not in local_seen_ids:
+                            local_seen_ids.add(policy_id)
+                            policies.append(policy)
+                            new_policies_count += 1
+                    
+                    if callback:
+                        callback(f"第{page}页获取{len(page_policies)}条政策（新增{new_policies_count}条），累计{len(policies)}条")
+                    
+                    # 如果连续多页都没有新政策（全部重复），可能已经爬取完毕
+                    if new_policies_count == 0:
+                        consecutive_empty_pages += 1
+                        if consecutive_empty_pages >= max_empty_pages:
+                            if callback:
+                                callback(f"连续{max_empty_pages}页无新政策（全部重复），停止爬取")
+                            break
+                    else:
+                        consecutive_empty_pages = 0  # 有新政策，重置计数
+                    
+                    # 控制速度
+                    time.sleep(self.config.get("request_delay", 2))
+                    
                     page += 1
-                    continue
-                else:
-                    # 有数据，重置连续空页计数
-                    consecutive_empty_pages = 0
-                
-                # 去重并添加到结果
-                new_policies_count = 0
-                for policy in page_policies:
-                    policy_id = policy.id
-                    if policy_id not in seen_ids:
-                        seen_ids.add(policy_id)
-                        policies.append(policy)
-                        new_policies_count += 1
-                
-                if callback:
-                    callback(f"第{page}页获取{len(page_policies)}条政策（新增{new_policies_count}条），累计{len(policies)}条")
-                
-                # 如果连续多页都没有新政策（全部重复），可能已经爬取完毕
-                if new_policies_count == 0:
-                    consecutive_empty_pages += 1
-                    if consecutive_empty_pages >= max_empty_pages:
-                        if callback:
-                            callback(f"连续{max_empty_pages}页无新政策（全部重复），停止爬取")
-                        break
-                else:
-                    consecutive_empty_pages = 0  # 有新政策，重置计数
-                
-                # 控制速度
-                time.sleep(self.config.get("request_delay", 2))
-                
-                page += 1
-                
-            except Exception as e:
-                if callback:
-                    callback(f"第{page}页抓取失败: {e}")
-                break
+                    
+                except Exception as e:
+                    if callback:
+                        callback(f"第{page}页抓取失败: {e}")
+                        import traceback
+                        callback(f"错误详情: {traceback.format_exc()}")
+                    logging.error(f"第{page}页抓取异常: {e}", exc_info=True)
+                    break
             
             # 合并当前数据源的政策到总列表（去重）
             for policy in policies:
@@ -477,6 +589,38 @@ class PolicyCrawler:
             detail_result = self.api_client.get_policy_detail(policy.link, data_source)
             policy.content = detail_result.get('content', '')
             attachments = detail_result.get('attachments', [])
+            
+            # 更新元信息（如果详情页有更完整的信息）
+            metadata = detail_result.get('metadata', {})
+            if metadata:
+                # 更新发布日期（如果详情页有且列表页没有，或列表页的值不是日期格式）
+                if metadata.get('pub_date'):
+                    # 验证是否是日期格式
+                    is_date_format = any(keyword in metadata['pub_date'] for keyword in ['年', '月', '日']) or len(metadata['pub_date']) >= 8
+                    if is_date_format:
+                        # 如果列表页没有，或者列表页的值不是日期格式，则更新
+                        if not policy.pub_date or not any(keyword in policy.pub_date for keyword in ['年', '月', '日']):
+                            parsed_date = self._parse_date(metadata['pub_date'])
+                            if parsed_date:
+                                policy.pub_date = parsed_date.strftime('%Y-%m-%d')
+                            else:
+                                policy.pub_date = metadata['pub_date'].strip()
+                # 更新发布机构（如果详情页有）
+                if metadata.get('level'):
+                    policy.level = metadata['level']
+                # 更新效力级别（如果详情页有）
+                if metadata.get('validity'):
+                    policy.validity = metadata['validity']
+                # 更新生效日期（如果详情页有）
+                if metadata.get('effective_date'):
+                    parsed_date = self._parse_date(metadata['effective_date'])
+                    if parsed_date:
+                        policy.effective_date = parsed_date.strftime('%Y-%m-%d')
+                    else:
+                        policy.effective_date = metadata['effective_date'].strip()
+                # 更新分类（如果详情页有）
+                if metadata.get('category'):
+                    policy.category = metadata['category']
         
         # 2. 保存JSON数据
         if self.config.get("save_json", True):

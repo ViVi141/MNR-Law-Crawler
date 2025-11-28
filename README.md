@@ -9,11 +9,13 @@
 - 🖥️ **双模式支持**：支持GUI图形界面和CLI命令行两种模式
 - 🎯 **智能爬取**：自动识别并爬取法律法规、部门规章、规范性文件
 - 📄 **文档转换**：自动将DOCX/DOC/PDF转换为Markdown格式
-- 🤖 **RAG知识库**：生成适合RAG系统的结构化Markdown文件
+- 🤖 **RAG知识库**：生成适合RAG系统的结构化Markdown文件（含YAML Front Matter）
 - 🛡️ **反爬虫对抗**：User-Agent轮换、会话管理、代理IP支持
-- 💾 **多格式保存**：同时保存JSON、Markdown和原始文件
+- 💾 **多格式保存**：同时保存JSON、Markdown、DOCX和原始文件
 - 📊 **实时进度**：实时显示爬取进度和统计信息
 - ⚙️ **灵活配置**：支持GUI设置和配置文件两种方式
+- 🧹 **智能清洗**：自动清洗HTML内容，移除页面元素和重复元信息
+- 📋 **完整元信息**：自动提取发布日期、发布机构、效力级别等完整元信息
 
 ## 📦 项目结构
 
@@ -98,37 +100,65 @@ python main.py version
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `api_base_url` | API基础URL | `https://www.mnr.gov.cn/api` |
+| `base_url` | 网站基础URL | `https://f.mnr.gov.cn/` |
+| `search_api` | 搜索API地址 | `https://search.mnr.gov.cn/was5/web/search` |
+| `channel_id` | 频道ID | `174757` |
 | `output_dir` | 输出目录 | `crawled_data` |
-| `law_rule_types` | 政策类型列表 | `[1, 2, 3]` |
+| `perpage` | 每页数量 | `20` |
+| `max_pages` | 最大页数 | `999999` |
+| `timeout` | 请求超时（秒） | `30` |
+| `request_delay` | 请求延迟（秒） | `2` |
+| `retry_delay` | 重试延迟（秒） | `5` |
 
-**重要提示**：需要根据自然资源部实际API接口调整以下内容：
-- `api_base_url`：API基础URL
-- `core/api_client.py`：API接口URL和参数格式
-- `core/models.py`：数据模型字段映射
-- `core/crawler.py`：政策类型名称和URL生成
+### 数据源配置
+
+支持配置多个数据源，每个数据源可独立设置：
+- `name`: 数据源名称
+- `base_url`: 基础URL
+- `search_api`: 搜索API
+- `ajax_api`: AJAX API
+- `channel_id`: 频道ID
+- `enabled`: 是否启用
 
 ## 📂 输出结构
 
 ```
 crawled_data/
 ├── json/                          # JSON数据文件
-│   ├── policy_{id}.json          # 基础数据
-│   └── policy_{id}_complete.json # 完整数据
+│   └── policy_{标题}_{来源}.json  # 政策数据（含完整元信息）
+├── docx/                          # DOCX格式文件
+│   └── {编号}_{政策名称}.docx     # Word文档
 ├── files/                         # 原始附件文件
-│   └── {id}_{filename}.{ext}     # 下载的附件
+│   └── {编号}_{filename}.{ext}   # 下载的附件
 └── markdown/                      # RAG格式Markdown
-    └── {编号}_{政策名称}.md       # RAG知识库文件
+    └── {编号}_{政策名称}.md       # RAG知识库文件（含YAML Front Matter）
 ```
 
-## 🔧 开发说明
+### Markdown文件格式
 
-本项目基于 `gd-law-crawler` 的项目结构创建，需要根据自然资源部实际API进行以下调整：
+生成的Markdown文件包含：
+- **YAML Front Matter**：包含标题、发布机构、发布日期、发文字号等元信息
+- **基本信息**：结构化的政策基本信息
+- **正文内容**：清洗后的正文内容（已移除页面元素和重复元信息）
 
-1. **API接口调整**：修改 `core/api_client.py` 中的API URL和请求参数
-2. **数据模型调整**：修改 `core/models.py` 中的字段映射
-3. **爬虫逻辑调整**：根据实际API响应格式调整 `core/crawler.py`
-4. **配置调整**：更新 `config.json.example` 中的默认配置
+## 🔧 技术特性
+
+### 内容清洗
+- 自动移除页面元素（搜索框、导航栏、打印按钮等）
+- 移除重复的元信息表格
+- 智能识别正文开始位置
+- 处理被拆分的文本（如"来一一源"）
+
+### 元信息提取
+- 从列表页提取基础元信息
+- 从详情页提取完整元信息（发布日期、发布机构、效力级别等）
+- 自动验证日期格式，避免误提取
+- 按行匹配标签和值，确保准确性
+
+### HTML解析
+- 针对 f.mnr.gov.cn 的特定HTML结构定制化解析
+- 支持多种正文容器（id="content"、class="Custom_UnionStyle"等）
+- 智能识别政策表格（基于行数和标签特征）
 
 ## 📄 许可证
 
@@ -148,6 +178,38 @@ crawled_data/
 ---
 
 **版本**: 1.0.0  
-**最后更新**: 2025-11-25  
+**最后更新**: 2025-11-28  
 **项目主页**: https://github.com/ViVi141/mnr-law-crawler
+
+## 📝 更新日志
+
+### v1.0.0 (2025-11-28)
+- ✅ 适配 f.mnr.gov.cn 网站结构
+- ✅ 实现智能内容清洗，移除页面元素和重复元信息
+- ✅ 完善元信息提取，支持从详情页提取完整元信息
+- ✅ 修复标签和值匹配错位问题
+- ✅ 优化日期格式验证，避免误提取
+- ✅ 支持多数据源配置
+- ✅ 支持打包为exe可执行文件
+
+## 📦 打包说明
+
+### 打包为EXE
+
+使用提供的打包脚本：
+
+```bash
+python build_exe.py
+```
+
+打包完成后，exe文件位于 `dist/MNR-Law-Crawler.exe`
+
+**打包要求**：
+- 已安装 PyInstaller: `pip install pyinstaller`
+- Python 3.8+
+
+**使用打包的EXE**：
+1. 将 `MNR-Law-Crawler.exe` 和 `config.json.example` 放在同一目录
+2. 复制 `config.json.example` 为 `config.json`（可选，程序会自动创建）
+3. 双击运行 `MNR-Law-Crawler.exe`
 

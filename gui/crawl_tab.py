@@ -38,7 +38,7 @@ class CrawlTab:
             # 如果没有配置数据源列表，使用默认配置（向后兼容）
             data_sources = [{
                 "name": "政府信息公开平台",
-                "base_url": self.config.get("base_url", "https://gi.mnr.gov.cn/"),
+                "base_url": self.config.get("base_url", "https://f.mnr.gov.cn/"),
                 "enabled": True
             }]
         
@@ -290,9 +290,9 @@ class CrawlTab:
             # 如果没有配置数据源列表，使用默认配置（向后兼容）
             data_sources = [{
                 "name": "政府信息公开平台",
-                "base_url": self.config.get("base_url", "https://gi.mnr.gov.cn/"),
+                "base_url": self.config.get("base_url", "https://f.mnr.gov.cn/"),
                 "search_api": self.config.get("search_api", "https://search.mnr.gov.cn/was5/web/search"),
-                "channel_id": self.config.get("channel_id", "216640"),
+                "channel_id": self.config.get("channel_id", "174757"),
                 "enabled": True
             }]
         
