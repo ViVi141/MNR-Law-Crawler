@@ -30,27 +30,56 @@ class CrawlTab:
     def _create_widgets(self):
         """创建界面组件"""
         # 数据源选择
-        source_frame = ttk.LabelFrame(self.frame, text="数据源选择", padding="10")
+        source_frame = ttk.LabelFrame(self.frame, text="数据源选择（至少选择一个）", padding="10")
         source_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         
         data_sources = self.config.get("data_sources", [])
         if not data_sources:
             # 如果没有配置数据源列表，使用默认配置（向后兼容）
-            data_sources = [{
-                "name": "政府信息公开平台",
-                "base_url": self.config.get("base_url", "https://f.mnr.gov.cn/"),
-                "enabled": True
-            }]
+            data_sources = [
+                {
+                    "name": "政府信息公开平台",
+                    "base_url": self.config.get("base_url", "https://gi.mnr.gov.cn/"),
+                    "search_api": self.config.get("search_api", "https://search.mnr.gov.cn/was5/web/search"),
+                    "channel_id": self.config.get("channel_id", "216640"),
+                    "enabled": True
+                },
+                {
+                    "name": "政策法规库",
+                    "base_url": "https://f.mnr.gov.cn/",
+                    "search_api": "https://search.mnr.gov.cn/was5/web/search",
+                    "channel_id": "174757",
+                    "enabled": False
+                }
+            ]
+        
+        # 确保所有数据源都有完整的配置信息
+        for ds in data_sources:
+            if "search_api" not in ds:
+                ds["search_api"] = self.config.get("search_api", "https://search.mnr.gov.cn/was5/web/search")
+            if "ajax_api" not in ds:
+                ds["ajax_api"] = self.config.get("ajax_api", "https://search.mnr.gov.cn/was/ajaxdata_jsonp.jsp")
+            if "channel_id" not in ds:
+                ds["channel_id"] = self.config.get("channel_id", "216640")
         
         self.data_source_vars = {}
         for idx, ds in enumerate(data_sources):
             var = tk.BooleanVar(value=ds.get("enabled", True))
-            self.data_source_vars[ds.get("name", f"数据源{idx+1}")] = var
+            ds_name = ds.get("name", f"数据源{idx+1}")
+            self.data_source_vars[ds_name] = var
             ttk.Checkbutton(
                 source_frame,
-                text=ds.get("name", f"数据源{idx+1}") + f" ({ds.get('base_url', '')})",
+                text=ds_name + f" ({ds.get('base_url', '')})",
                 variable=var
             ).grid(row=idx, column=0, sticky="w", padx=5, pady=2)
+        
+        # 提示标签
+        ttk.Label(
+            source_frame,
+            text="提示：至少选择一个数据源，多个数据源将按顺序执行",
+            font=("", 8),
+            foreground="gray"
+        ).grid(row=len(data_sources), column=0, sticky="w", padx=5, pady=(5, 0))
         
         mode_frame = ttk.LabelFrame(self.frame, text="爬取模式", padding="10")
         mode_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
@@ -290,19 +319,33 @@ class CrawlTab:
             # 如果没有配置数据源列表，使用默认配置（向后兼容）
             data_sources = [{
                 "name": "政府信息公开平台",
-                "base_url": self.config.get("base_url", "https://f.mnr.gov.cn/"),
+                "base_url": self.config.get("base_url", "https://gi.mnr.gov.cn/"),
                 "search_api": self.config.get("search_api", "https://search.mnr.gov.cn/was5/web/search"),
-                "channel_id": self.config.get("channel_id", "174757"),
+                "channel_id": self.config.get("channel_id", "216640"),
                 "enabled": True
             }]
         
         # 更新数据源的启用状态
+        enabled_count = 0
         for ds in data_sources:
             ds_name = ds.get("name", "")
             if ds_name in self.data_source_vars:
                 ds["enabled"] = self.data_source_vars[ds_name].get()
+                if ds["enabled"]:
+                    enabled_count += 1
+        
+        # 验证至少选择一个数据源
+        if enabled_count == 0:
+            messagebox.showerror("错误", "请至少选择一个数据源！")
+            return
         
         self.config.set("data_sources", data_sources)
+        
+        # 显示选中的数据源信息（仅在多个数据源时显示）
+        enabled_sources = [ds.get("name") for ds in data_sources if ds.get("enabled", False)]
+        if len(enabled_sources) > 1:
+            # 不显示弹窗，只在日志中提示，避免打断用户操作
+            pass  # 信息会在爬取过程中通过callback显示
         
         # 解析关键词
         keywords_str = self.keywords.get().strip()

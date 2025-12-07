@@ -15,19 +15,27 @@ class Config:
         # 数据源配置（支持多个网站）
         "data_sources": [
             {
+                "name": "政府信息公开平台",
+                "base_url": "https://gi.mnr.gov.cn/",
+                "search_api": "https://search.mnr.gov.cn/was5/web/search",
+                "ajax_api": "https://search.mnr.gov.cn/was/ajaxdata_jsonp.jsp",
+                "channel_id": "216640",
+                "enabled": True
+            },
+            {
                 "name": "政策法规库",
                 "base_url": "https://f.mnr.gov.cn/",
                 "search_api": "https://search.mnr.gov.cn/was5/web/search",
                 "ajax_api": "https://search.mnr.gov.cn/was/ajaxdata_jsonp.jsp",
                 "channel_id": "174757",
-                "enabled": True
+                "enabled": False
             }
         ],
-        # 兼容旧配置（向后兼容）
-        "base_url": "https://f.mnr.gov.cn/",
+        # 兼容旧配置（向后兼容，默认使用政府信息公开平台）
+        "base_url": "https://gi.mnr.gov.cn/",
         "search_api": "https://search.mnr.gov.cn/was5/web/search",
         "ajax_api": "https://search.mnr.gov.cn/was/ajaxdata_jsonp.jsp",
-        "channel_id": "174757",  # 政策法规库的频道ID
+        "channel_id": "216640",  # 政府信息公开平台的频道ID
         
         # 请求配置
         "request_delay": 2,
@@ -36,6 +44,10 @@ class Config:
         "rate_limit_delay": 30,
         "session_rotate_interval": 50,
         "timeout": 30,
+        
+        # 政策重试配置
+        "max_policy_retries": 0,  # 政策爬取失败时的最大重试次数（0表示不重试）
+        "policy_retry_delay": 5,  # 政策重试前的等待时间（秒）
         
         # 爬取配置
         "page_size": 20,
@@ -99,7 +111,36 @@ class Config:
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 user_config = json.load(f)
-                self.config.update(user_config)
+            
+            # 特殊处理：如果用户配置中没有data_sources，使用默认的
+            # 如果用户配置中有data_sources但只有一个，检查是否需要补充默认的第二个数据源
+            if 'data_sources' not in user_config or not user_config.get('data_sources'):
+                # 用户配置中没有data_sources，保持默认配置
+                pass
+            else:
+                # 用户配置中有data_sources，检查是否需要补充
+                user_data_sources = user_config.get('data_sources', [])
+                default_data_sources = self.DEFAULT_CONFIG.get('data_sources', [])
+                
+                # 如果用户配置中只有一个数据源，且默认配置中有两个，检查是否需要补充
+                if len(user_data_sources) == 1 and len(default_data_sources) == 2:
+                    user_source_names = {ds.get('name') for ds in user_data_sources}
+                    default_source_names = {ds.get('name') for ds in default_data_sources}
+                    
+                    # 如果用户配置中缺少某个默认数据源，补充它
+                    missing_sources = default_source_names - user_source_names
+                    if missing_sources:
+                        for default_ds in default_data_sources:
+                            if default_ds.get('name') in missing_sources:
+                                # 添加缺失的数据源，默认禁用
+                                user_data_sources.append({
+                                    **default_ds,
+                                    'enabled': False
+                                })
+                        user_config['data_sources'] = user_data_sources
+            
+            # 更新配置
+            self.config.update(user_config)
             return True
         except Exception as e:
             print(f"配置加载失败: {e}")

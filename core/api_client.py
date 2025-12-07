@@ -8,7 +8,6 @@ import time
 import random
 import json
 import warnings
-import logging
 from typing import Dict, Optional, Any, List
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -62,7 +61,7 @@ class APIClient:
             'User-Agent': user_agent,
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Referer': self.config.get("base_url", "https://f.mnr.gov.cn/"),
+            'Referer': self.config.get("base_url", "https://gi.mnr.gov.cn/"),
             'X-Requested-With': 'XMLHttpRequest'
         })
         
@@ -169,14 +168,14 @@ class APIClient:
         # 如果提供了数据源配置，使用它；否则使用默认配置
         if data_source:
             search_api = data_source.get("search_api", "https://search.mnr.gov.cn/was5/web/search")
-            channel_id = data_source.get("channel_id", "174757")
-            base_url = data_source.get("base_url", "https://f.mnr.gov.cn/")
+            channel_id = data_source.get("channel_id", "216640")
+            base_url = data_source.get("base_url", "https://gi.mnr.gov.cn/")
             # 更新Referer
             self.session.headers.update({'Referer': base_url})
         else:
             search_api = self.config.get("search_api", "https://search.mnr.gov.cn/was5/web/search")
-            channel_id = self.config.get("channel_id", "174757")
-            base_url = self.config.get("base_url", "https://f.mnr.gov.cn/")
+            channel_id = self.config.get("channel_id", "216640")
+            base_url = self.config.get("base_url", "https://gi.mnr.gov.cn/")
         
         perpage = self.config.get("perpage", 20)
         
@@ -284,7 +283,7 @@ class APIClient:
         
         # 如果找到数据源，更新Referer
         if data_source:
-            base_url = data_source.get("base_url", "https://f.mnr.gov.cn/")
+            base_url = data_source.get("base_url", "https://gi.mnr.gov.cn/")
             self.session.headers.update({'Referer': base_url})
         
         self._check_and_rotate_session()
@@ -303,8 +302,9 @@ class APIClient:
                 
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # 针对f.mnr.gov.cn的特定结构：正文在 <div id="content"> 中
+                # 针对自然资源部网站的特定结构：正文在 <div id="content"> 或 <div class="TRS_Editor"> 中
                 # 优先查找 id="content" 的div（这是真正的正文容器）
+                # gi.mnr.gov.cn 和 f.mnr.gov.cn 都使用类似的结构
                 content_div = soup.find('div', id='content')
                 
                 if not content_div:
@@ -415,7 +415,7 @@ class APIClient:
         return {'content': '', 'attachments': []}
     
     def _extract_metadata(self, soup: BeautifulSoup) -> Dict[str, str]:
-        """从详情页提取元信息（针对f.mnr.gov.cn的特定结构）
+        """从详情页提取元信息（针对自然资源部网站的特定结构，支持 gi.mnr.gov.cn 和 f.mnr.gov.cn）
         
         Args:
             soup: BeautifulSoup对象
@@ -425,7 +425,7 @@ class APIClient:
         """
         metadata = {}
         
-        # f.mnr.gov.cn使用div结构存储元信息，在dtl-middle中
+        # 自然资源部网站使用div结构存储元信息，在dtl-middle中（gi.mnr.gov.cn 和 f.mnr.gov.cn 都使用）
         # 查找dtl-middle容器
         dtl_middle = soup.find('div', class_='dtl-middle')
         if dtl_middle:
@@ -867,7 +867,7 @@ class APIClient:
         if file_path.startswith('http://') or file_path.startswith('https://'):
             url = file_path
         else:
-            base_url = self.config.get("base_url", "https://f.mnr.gov.cn/")
+            base_url = self.config.get("base_url", "https://gi.mnr.gov.cn/")
             url = urljoin(base_url, file_path)
         
         self._check_and_rotate_session()

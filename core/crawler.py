@@ -15,8 +15,11 @@ from bs4 import BeautifulSoup
 from .config import Config
 from .api_client import APIClient
 from .converter import DocumentConverter
-from .models import Policy, PolicyDetail, FileAttachment, CrawlProgress
+from .models import Policy, CrawlProgress
+from .mnr_spider import MNRSpider
 
+# 使用模块级logger
+logger = logging.getLogger(__name__)
 
 # 自然资源部分类配置
 MNR_CATEGORIES = {
@@ -61,7 +64,11 @@ class PolicyCrawler:
         self.progress_callback = progress_callback
         self.stop_requested = False  # 停止标志
         self.progress = CrawlProgress()
-        self.base_url = config.get("base_url", "https://f.mnr.gov.cn/")
+        
+        # 初始化 MNR 爬虫（使用新的核心实现，用于默认数据源）
+        # 注意：在多数据源模式下，会为每个数据源创建新的爬虫实例
+        self.mnr_spider = MNRSpider(config, self.api_client)
+        self.base_url = self.mnr_spider.base_url
         
         # 创建输出目录
         self._create_output_dirs()
@@ -78,7 +85,7 @@ class PolicyCrawler:
     def request_stop(self):
         """请求停止爬取"""
         self.stop_requested = True
-        logging.info("\n[停止] 收到停止请求，正在停止...")
+        logger.info("[停止] 收到停止请求，正在停止...")
     
     def _update_progress(self, **kwargs):
         """更新进度并触发回调"""
@@ -399,7 +406,7 @@ class PolicyCrawler:
         callback: Optional[Callable] = None,
         limit_pages: Optional[int] = None
     ) -> List[Policy]:
-        """搜索所有政策（支持多个数据源）
+        """搜索所有政策（支持多数据源顺序执行）
         
         Args:
             keywords: 关键词列表
@@ -419,233 +426,264 @@ class PolicyCrawler:
         if not data_sources:
             # 如果没有配置数据源列表，使用默认配置（向后兼容）
             data_sources = [{
-                "name": "默认数据源",
-                "base_url": self.config.get("base_url", "https://f.mnr.gov.cn/"),
+                "name": "政府信息公开平台",
+                "base_url": self.config.get("base_url", "https://gi.mnr.gov.cn/"),
                 "search_api": self.config.get("search_api", "https://search.mnr.gov.cn/was5/web/search"),
-                "channel_id": self.config.get("channel_id", "174757"),
+                "channel_id": self.config.get("channel_id", "216640"),
                 "enabled": True
             }]
         
         # 过滤出启用的数据源
         enabled_sources = [ds for ds in data_sources if ds.get("enabled", True)]
         
+        if not enabled_sources:
+            if callback:
+                callback("错误：没有启用的数据源，请至少选择一个数据源")
+            return []
+        
         if callback:
             callback(f"开始搜索政策，关键词: {', '.join(keywords) if keywords else '(无关键词，搜索全部政策)'}")
             callback(f"启用数据源: {', '.join([ds.get('name', '未知') for ds in enabled_sources])}")
+            if len(enabled_sources) > 1:
+                callback(f"将按顺序执行 {len(enabled_sources)} 个数据源")
         
         all_policies = []
-        seen_ids = set()  # 用于去重（跨数据源）
+        seen_ids = set()  # 用于跨数据源去重
         
-        # 遍历每个数据源
-        for data_source in enabled_sources:
-            source_name = data_source.get("name", "未知数据源")
+        def stop_check():
+            return self.stop_requested
+        
+        # 按顺序遍历每个启用的数据源
+        for idx, data_source in enumerate(enabled_sources, 1):
+            if self.stop_requested:
+                if callback:
+                    callback("停止搜索")
+                break
+            
+            source_name = data_source.get("name", f"数据源{idx}")
             if callback:
                 callback(f"\n{'='*60}")
-                callback(f"开始爬取数据源: {source_name}")
+                callback(f"开始爬取数据源 {idx}/{len(enabled_sources)}: {source_name}")
                 callback(f"{'='*60}")
             
-            policies = []
-            local_seen_ids = set()  # 用于当前数据源内部去重
-            page = 1
-            if limit_pages is not None:
-                max_pages = limit_pages
-            else:
-                max_pages = self.config.get("max_pages", 999999)
-            max_empty_pages = self.config.get("max_empty_pages", 3)
-            consecutive_empty_pages = 0
+            # 为当前数据源创建临时配置
+            temp_config = Config()
+            temp_config.config = self.config.config.copy()
+            # 确保数据源明确标记为启用
+            data_source_copy = data_source.copy()
+            data_source_copy["enabled"] = True
+            temp_config.config["data_sources"] = [data_source_copy]
+            temp_config.config["base_url"] = data_source.get("base_url", "https://gi.mnr.gov.cn/")
+            temp_config.config["search_api"] = data_source.get("search_api", "https://search.mnr.gov.cn/was5/web/search")
+            temp_config.config["channel_id"] = data_source.get("channel_id", "216640")
             
-            while page <= max_pages:
-                if self.stop_requested:
-                    if callback:
-                        callback("停止搜索")
-                    break
-                
-                if callback:
-                    callback(f"正在抓取第{page}页...")
-                
-                try:
-                    result = self.api_client.search_policies(keywords, page, start_date, end_date, data_source)
-                    
-                    # 解析结果
-                    page_policies = []
-                    requested_perpage = self.config.get("perpage", 20)
-                    
-                    if not result:
-                        # API请求失败或无响应
-                        consecutive_empty_pages += 1
-                        if callback:
-                            callback(f"第{page}页API请求失败或无响应")
-                    else:
-                        # 解析响应数据
-                        if result['type'] == 'json':
-                            page_policies = self._parse_json_results(result['data'], callback)
-                            if callback:
-                                callback(f"JSON解析: 请求{requested_perpage}条，实际返回{len(page_policies)}条")
-                        elif result['type'] == 'html':
-                            soup = BeautifulSoup(result['data'], 'html.parser')
-                            # 限制解析数量为请求的perpage值（因为API返回的行数可能是perpage的倍数）
-                            page_policies = self._parse_html_results(soup, callback, '全部', max_policies=requested_perpage, data_source=data_source)
-                            if callback:
-                                callback(f"HTML解析: 请求{requested_perpage}条，实际解析{len(page_policies)}条")
-                    
-                    # 检查是否解析出政策
-                    if not page_policies or len(page_policies) == 0:
-                        consecutive_empty_pages += 1
-                        if callback:
-                            callback(f"第{page}页无数据（解析出0条政策），连续空页数: {consecutive_empty_pages}/{max_empty_pages}")
-                        
-                        # 检查是否达到连续空页限制
-                        if consecutive_empty_pages >= max_empty_pages:
-                            if callback:
-                                callback(f"连续{max_empty_pages}页无数据，停止爬取")
-                            break
-                        
-                        # 继续下一页
-                        page += 1
-                        continue
-                    else:
-                        # 有数据，重置连续空页计数
-                        consecutive_empty_pages = 0
-                    
-                    # 去重并添加到结果（使用本地seen_ids，避免与全局seen_ids冲突）
-                    new_policies_count = 0
-                    for policy in page_policies:
-                        policy_id = policy.id
-                        # 先检查本地seen_ids（当前数据源内部去重）
-                        if policy_id not in local_seen_ids:
-                            local_seen_ids.add(policy_id)
-                            policies.append(policy)
-                            new_policies_count += 1
-                    
-                    if callback:
-                        callback(f"第{page}页获取{len(page_policies)}条政策（新增{new_policies_count}条），累计{len(policies)}条")
-                    
-                    # 如果连续多页都没有新政策（全部重复），可能已经爬取完毕
-                    if new_policies_count == 0:
-                        consecutive_empty_pages += 1
-                        if consecutive_empty_pages >= max_empty_pages:
-                            if callback:
-                                callback(f"连续{max_empty_pages}页无新政策（全部重复），停止爬取")
-                            break
-                    else:
-                        consecutive_empty_pages = 0  # 有新政策，重置计数
-                    
-                    # 控制速度
-                    time.sleep(self.config.get("request_delay", 2))
-                    
-                    page += 1
-                    
-                except Exception as e:
-                    if callback:
-                        callback(f"第{page}页抓取失败: {e}")
-                        import traceback
-                        callback(f"错误详情: {traceback.format_exc()}")
-                    logging.error(f"第{page}页抓取异常: {e}", exc_info=True)
-                    break
-            
-            # 合并当前数据源的政策到总列表（去重）
-            for policy in policies:
-                policy_id = policy.id
-                if policy_id not in seen_ids:
-                    seen_ids.add(policy_id)
-                    all_policies.append(policy)
+            # 为当前数据源创建MNR爬虫（会自动选择对应的HTML解析器）
+            from .mnr_spider import MNRSpider
+            temp_api_client = APIClient(temp_config)
+            mnr_spider = MNRSpider(temp_config, temp_api_client)
             
             if callback:
-                callback(f"数据源 {source_name} 完成，共获取 {len(policies)} 条政策")
+                parser_type = type(mnr_spider.html_parser).__name__
+                callback(f"使用解析器: {parser_type} (适配 {data_source.get('base_url', '')})")
+            
+            # 如果设置了 limit_pages，临时修改 max_pages
+            original_max_pages = mnr_spider.max_pages
+            if limit_pages is not None:
+                mnr_spider.max_pages = limit_pages
+            
+            try:
+                policies = mnr_spider.crawl_policies(
+                    keywords=keywords,
+                    callback=callback,
+                    start_date=start_date,
+                    end_date=end_date,
+                    category=None,  # 搜索全部分类
+                    stop_callback=stop_check,
+                    policy_callback=None
+                )
+                
+                # 去重并添加到总列表
+                source_policy_count = 0
+                for policy in policies:
+                    policy_id = policy.id
+                    if policy_id not in seen_ids:
+                        seen_ids.add(policy_id)
+                        all_policies.append(policy)
+                        source_policy_count += 1
+                
+                if callback:
+                    callback(f"数据源 {source_name} 完成，获取 {len(policies)} 条政策（新增 {source_policy_count} 条，去重后）")
+                
+            except Exception as e:
+                # 捕获异常，记录错误但继续处理下一个数据源
+                from utils.logger import Logger
+                error_msg = f"数据源 {source_name} 爬取失败: {str(e)}"
+                if callback:
+                    callback(f"[错误] {error_msg}")
+                logger.error(f"数据源 {source_name} 爬取异常: {e}", exc_info=True)
+                
+                # 记录数据源级别的失败（如果获取到政策但爬取失败）
+                log_dir = self.config.get("log_dir", "logs")
+                Logger.log_failed_policy(
+                    title=f"数据源: {source_name}",
+                    link=data_source.get("base_url", ""),
+                    reason=error_msg,
+                    pub_date="",
+                    doc_number="",
+                    log_dir=log_dir
+                )
+                # 继续处理下一个数据源，不中断整个流程
+                
+            finally:
+                # 恢复原始 max_pages
+                mnr_spider.max_pages = original_max_pages
+                # 关闭临时API客户端
+                if hasattr(temp_api_client, 'close'):
+                    try:
+                        temp_api_client.close()
+                    except Exception:
+                        pass  # 忽略关闭时的异常
         
         if callback:
-            callback(f"\n所有数据源爬取完成，总计 {len(all_policies)} 条政策")
+            callback(f"\n所有数据源爬取完成，总计 {len(all_policies)} 条政策（已去重）")
         
         return all_policies
     
-    def crawl_single_policy(self, policy: Policy, callback: Optional[Callable] = None) -> bool:
-        """爬取单个政策
+    def crawl_single_policy(self, policy: Policy, callback: Optional[Callable] = None, retry_count: int = 0) -> bool:
+        """爬取单个政策（支持自动重试）
         
         Args:
             policy: 政策对象
             callback: 进度回调函数
+            retry_count: 当前重试次数（内部使用）
             
         Returns:
             是否成功
         """
+        from utils.logger import Logger
+        
         self._update_progress(
             current_policy_id=policy.id,
             current_policy_title=policy.title
         )
         
-        if callback:
-            callback(f"\n爬取政策: {policy.title}")
-        
-        logging.info(f"\n爬取政策: {policy.title}")
-        logging.info("=" * 60)
-        
-        # 1. 获取详情页内容和附件（如果还没有）
-        attachments = []
-        if not policy.content and policy.link:
+        if retry_count > 0:
             if callback:
-                callback("获取详情页内容和附件...")
-            # 获取数据源信息（如果policy对象有保存）
-            data_source = getattr(policy, '_data_source', None)
-            detail_result = self.api_client.get_policy_detail(policy.link, data_source)
-            policy.content = detail_result.get('content', '')
-            attachments = detail_result.get('attachments', [])
+                callback(f"\n[重试 {retry_count}] 爬取政策: {policy.title}")
+            logger.info(f"[重试 {retry_count}] 爬取政策: {policy.title}")
+        else:
+            if callback:
+                callback(f"\n爬取政策: {policy.title}")
+            logger.info(f"爬取政策: {policy.title}")
+        
+        max_policy_retries = self.config.get("max_policy_retries", 0)  # 默认不重试
+        
+        try:
+            # 1. 获取详情页内容和附件（如果还没有）
+            attachments = []
+            if not policy.content and policy.link:
+                if callback:
+                    callback("获取详情页内容和附件...")
+                logger.debug(f"获取政策详情页: {policy.title[:50]}...")
+                # 获取数据源信息（如果policy对象有保存）
+                data_source = getattr(policy, '_data_source', None)
+                detail_result = self.api_client.get_policy_detail(policy.link, data_source)
+                
+                if not detail_result:
+                    raise Exception("获取详情页失败：无响应")
+                
+                policy.content = detail_result.get('content', '')
+                attachments = detail_result.get('attachments', [])
+                
+                # 更新元信息（如果详情页有更完整的信息）
+                metadata = detail_result.get('metadata', {})
+                if metadata:
+                    # 更新发布日期（如果详情页有且列表页没有，或列表页的值不是日期格式）
+                    if metadata.get('pub_date'):
+                        # 验证是否是日期格式
+                        is_date_format = any(keyword in metadata['pub_date'] for keyword in ['年', '月', '日']) or len(metadata['pub_date']) >= 8
+                        if is_date_format:
+                            # 如果列表页没有，或者列表页的值不是日期格式，则更新
+                            if not policy.pub_date or not any(keyword in policy.pub_date for keyword in ['年', '月', '日']):
+                                parsed_date = self._parse_date(metadata['pub_date'])
+                                if parsed_date:
+                                    policy.pub_date = parsed_date.strftime('%Y-%m-%d')
+                                else:
+                                    policy.pub_date = metadata['pub_date'].strip()
+                    # 更新发布机构（如果详情页有）
+                    if metadata.get('level'):
+                        policy.level = metadata['level']
+                    # 更新效力级别（如果详情页有）
+                    if metadata.get('validity'):
+                        policy.validity = metadata['validity']
+                    # 更新生效日期（如果详情页有）
+                    if metadata.get('effective_date'):
+                        parsed_date = self._parse_date(metadata['effective_date'])
+                        if parsed_date:
+                            policy.effective_date = parsed_date.strftime('%Y-%m-%d')
+                        else:
+                            policy.effective_date = metadata['effective_date'].strip()
+                    # 更新分类（如果详情页有）
+                    if metadata.get('category'):
+                        policy.category = metadata['category']
             
-            # 更新元信息（如果详情页有更完整的信息）
-            metadata = detail_result.get('metadata', {})
-            if metadata:
-                # 更新发布日期（如果详情页有且列表页没有，或列表页的值不是日期格式）
-                if metadata.get('pub_date'):
-                    # 验证是否是日期格式
-                    is_date_format = any(keyword in metadata['pub_date'] for keyword in ['年', '月', '日']) or len(metadata['pub_date']) >= 8
-                    if is_date_format:
-                        # 如果列表页没有，或者列表页的值不是日期格式，则更新
-                        if not policy.pub_date or not any(keyword in policy.pub_date for keyword in ['年', '月', '日']):
-                            parsed_date = self._parse_date(metadata['pub_date'])
-                            if parsed_date:
-                                policy.pub_date = parsed_date.strftime('%Y-%m-%d')
-                            else:
-                                policy.pub_date = metadata['pub_date'].strip()
-                # 更新发布机构（如果详情页有）
-                if metadata.get('level'):
-                    policy.level = metadata['level']
-                # 更新效力级别（如果详情页有）
-                if metadata.get('validity'):
-                    policy.validity = metadata['validity']
-                # 更新生效日期（如果详情页有）
-                if metadata.get('effective_date'):
-                    parsed_date = self._parse_date(metadata['effective_date'])
-                    if parsed_date:
-                        policy.effective_date = parsed_date.strftime('%Y-%m-%d')
-                    else:
-                        policy.effective_date = metadata['effective_date'].strip()
-                # 更新分类（如果详情页有）
-                if metadata.get('category'):
-                    policy.category = metadata['category']
-        
-        # 2. 保存JSON数据
-        if self.config.get("save_json", True):
-            self._save_json(policy)
-        
-        # 3. 获取文件编号（markdown 和 files 文件夹各自独立递增）
-        markdown_number = self._get_next_markdown_number()
-        file_number = self._get_next_file_number()
-        
-        # 4. 下载附件（如果启用）
-        if self.config.get("save_files", True) and attachments:
-            self._download_attachments(policy, attachments, file_number, callback)
-        
-        # 5. 生成RAG Markdown
-        if self.config.get("save_markdown", True):
-            self._generate_rag_markdown(policy, markdown_number)
-        
-        # 6. 生成DOCX格式（如果启用）
-        if self.config.get("save_docx", True):
-            self._generate_docx(policy, markdown_number, callback)
-        
-        if callback:
-            callback("   ✓ 政策详细内容爬取完成")
-        logging.info("   ✓ 政策详细内容爬取完成")
-        return True
+            # 2. 保存JSON数据
+            if self.config.get("save_json", True):
+                self._save_json(policy)
+            
+            # 3. 获取文件编号（markdown 和 files 文件夹各自独立递增）
+            markdown_number = self._get_next_markdown_number()
+            file_number = self._get_next_file_number()
+            
+            # 4. 下载附件（如果启用）
+            if self.config.get("save_files", True) and attachments:
+                self._download_attachments(policy, attachments, file_number, callback)
+            
+            # 5. 生成RAG Markdown
+            if self.config.get("save_markdown", True):
+                self._generate_rag_markdown(policy, markdown_number)
+            
+            # 6. 生成DOCX格式（如果启用）
+            if self.config.get("save_docx", True):
+                self._generate_docx(policy, markdown_number, callback)
+            
+            if callback:
+                callback("   ✓ 政策爬取完成")
+            logger.debug("政策爬取完成")
+            return True
+            
+        except Exception as e:
+            # 记录失败信息到专门的失败日志
+            error_msg = str(e)
+            log_dir = self.config.get("log_dir", "logs")
+            
+            # 检查是否需要重试
+            max_policy_retries = self.config.get("max_policy_retries", 0)
+            if retry_count < max_policy_retries:
+                # 自动重试
+                retry_delay = self.config.get("policy_retry_delay", 5)
+                if callback:
+                    callback(f"   ✗ 政策爬取失败: {error_msg}")
+                    callback(f"   [自动重试] 等待 {retry_delay} 秒后重试 ({retry_count + 1}/{max_policy_retries})...")
+                logger.warning(f"政策爬取失败，将自动重试 ({retry_count + 1}/{max_policy_retries}): {policy.title} - {error_msg}")
+                
+                time.sleep(retry_delay)
+                return self.crawl_single_policy(policy, callback, retry_count + 1)
+            else:
+                # 重试次数已用完，记录失败
+                Logger.log_failed_policy(
+                    title=policy.title,
+                    link=policy.link or policy.source or policy.url,
+                    reason=f"{error_msg} (已重试 {retry_count} 次)",
+                    pub_date=policy.pub_date,
+                    doc_number=policy.doc_number,
+                    log_dir=log_dir
+                )
+                
+                if callback:
+                    callback(f"   ✗ 政策爬取失败: {error_msg} (已重试 {retry_count} 次)")
+                logger.error(f"政策爬取失败 (已重试 {retry_count} 次): {policy.title} - {error_msg}", exc_info=True)
+                return False
     
     def _save_json(self, policy: Policy):
         """保存JSON数据"""
@@ -655,9 +693,9 @@ class PolicyCrawler:
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(policy.to_dict(), f, ensure_ascii=False, indent=2)
-            logging.info(f"[OK] JSON已保存: {filepath}")
+            logger.debug(f"JSON已保存: {filepath}")
         except Exception as e:
-            logging.info(f"[X] JSON保存失败: {e}")
+            logger.error(f"JSON保存失败: {e}", exc_info=True)
     
     def _generate_rag_markdown(
         self,
@@ -723,10 +761,10 @@ class PolicyCrawler:
             with open(md_filepath, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(md_lines))
             
-            logging.info(f"[OK] Markdown已保存: {md_filepath}")
+            logger.debug(f"Markdown已保存: {md_filepath}")
             
         except Exception as e:
-            logging.info(f"[X] Markdown生成失败: {e}")
+            logger.error(f"Markdown生成失败: {e}", exc_info=True)
     
     def _generate_docx(
         self,
@@ -745,12 +783,11 @@ class PolicyCrawler:
             # 尝试导入 python-docx
             try:
                 from docx import Document
-                from docx.shared import Pt, RGBColor
                 from docx.enum.text import WD_ALIGN_PARAGRAPH
             except ImportError:
                 if callback:
                     callback("  [X] python-docx未安装，无法生成DOCX")
-                logging.info("[X] python-docx未安装，无法生成DOCX")
+                logger.warning("python-docx未安装，无法生成DOCX")
                 return
             
             # 创建文档
@@ -821,12 +858,12 @@ class PolicyCrawler:
             
             if callback:
                 callback(f"  [OK] DOCX已保存: {docx_filename}")
-            logging.info(f"[OK] DOCX已保存: {docx_filepath}")
+            logger.debug(f"DOCX已保存: {docx_filepath}")
             
         except Exception as e:
             if callback:
                 callback(f"  [X] DOCX生成失败: {e}")
-            logging.info(f"[X] DOCX生成失败: {e}")
+            logger.error(f"DOCX生成失败: {e}", exc_info=True)
     
     def _get_next_markdown_number(self) -> int:
         """获取下一个 Markdown 文件编号"""
@@ -978,11 +1015,11 @@ class PolicyCrawler:
             if self.api_client.download_file(url, save_path):
                 if callback:
                     callback(f"    [OK] 下载成功: {save_filename}")
-                logging.info(f"[OK] 附件下载成功: {save_path}")
+                logger.debug(f"附件下载成功: {save_path}")
             else:
                 if callback:
                     callback(f"    [X] 下载失败: {name or url}")
-                logging.info(f"[X] 附件下载失败: {url}")
+                logger.warning(f"附件下载失败: {url}")
             
             # 下载间隔
             if i < len(target_files):
@@ -1021,21 +1058,19 @@ class PolicyCrawler:
         
         if callback:
             callback(f"\n开始爬取政策详细内容，共 {len(all_policies)} 条政策")
-        logging.info("\n" + "=" * 60)
-        logging.info(f"▶▶ 开始爬取政策详细内容，共 {len(all_policies)} 条政策")
-        logging.info("=" * 60)
+        logger.info(f"开始爬取政策详细内容，共 {len(all_policies)} 条政策")
         
         # 2. 爬取每个政策的详细内容
         for i, policy in enumerate(all_policies, 1):
             if self.stop_requested:
                 if callback:
                     callback("停止爬取政策")
-                logging.info("[停止] 停止爬取政策")
+                logger.info("[停止] 停止爬取政策")
                 break
             
             if callback:
                 callback(f"\n进度: [{i}/{len(all_policies)}]")
-            logging.info(f"\n进度: [{i}/{len(all_policies)}]")
+            logger.info(f"进度: [{i}/{len(all_policies)}]")
             
             self.progress.current_policy_id = policy.id
             self.progress.current_policy_title = policy.title
@@ -1048,11 +1083,17 @@ class PolicyCrawler:
                 self.progress.completed_policies.append(policy.id)
             else:
                 self.progress.failed_count += 1
-                self.progress.failed_policies.append({
+                # 从失败日志中获取失败原因（如果已记录）
+                failure_reason = '爬取失败'
+                failed_policy_info = {
                     'id': policy.id,
                     'title': policy.title,
-                    'reason': '爬取失败'
-                })
+                    'link': policy.link or policy.source or policy.url,
+                    'pub_date': policy.pub_date,
+                    'doc_number': policy.doc_number,
+                    'reason': failure_reason
+                }
+                self.progress.failed_policies.append(failed_policy_info)
             
             self._update_progress()
             time.sleep(self.config.get("request_delay", 2))
@@ -1062,13 +1103,194 @@ class PolicyCrawler:
         
         if callback:
             callback("\n爬取完成")
-        logging.info("\n" + "=" * 60)
-        logging.info("爬取完成")
-        logging.info("=" * 60)
-        logging.info(f"总计: {self.progress.total_count} 条")
-        logging.info(f"成功: {self.progress.completed_count} 条")
-        logging.info(f"失败: {self.progress.failed_count} 条")
-        logging.info(f"成功率: {self.progress.success_rate:.2f}%")
+        logger.info("爬取完成")
+        logger.info(f"总计: {self.progress.total_count} 条")
+        logger.info(f"成功: {self.progress.completed_count} 条")
+        logger.info(f"失败: {self.progress.failed_count} 条")
+        logger.info(f"成功率: {self.progress.success_rate:.2f}%")
+        
+        # 如果有失败的政策，提示查看失败日志
+        if self.progress.failed_count > 0:
+            from pathlib import Path
+            log_dir = self.config.get("log_dir", "logs")
+            log_dir_path = Path(log_dir)
+            log_dir_path.mkdir(parents=True, exist_ok=True)
+            failure_log_file = log_dir_path / f"failures_{datetime.now().strftime('%Y%m%d')}.log"
+            
+            if callback:
+                callback(f"\n失败的政策已记录到: {failure_log_file}")
+            logger.info(f"失败的政策已记录到: {failure_log_file}")
+        
+        return self.progress
+    
+    def retry_failed_policies(
+        self,
+        failure_log_file: Optional[str] = None,
+        callback: Optional[Callable] = None
+    ) -> CrawlProgress:
+        """重试失败的政策（从失败日志文件中读取）
+        
+        Args:
+            failure_log_file: 失败日志文件路径（如果为None，使用今天的失败日志）
+            callback: 进度回调函数
+            
+        Returns:
+            爬取进度
+        """
+        from pathlib import Path
+        
+        # 确定失败日志文件路径
+        if failure_log_file is None:
+            log_dir = self.config.get("log_dir", "logs")
+            log_dir_path = Path(log_dir)
+            failure_log_file = log_dir_path / f"failures_{datetime.now().strftime('%Y%m%d')}.log"
+        else:
+            failure_log_file = Path(failure_log_file)
+        
+        if not failure_log_file.exists():
+            if callback:
+                callback(f"失败日志文件不存在: {failure_log_file}")
+            logger.warning(f"失败日志文件不存在: {failure_log_file}")
+            return CrawlProgress()
+        
+        if callback:
+            callback(f"\n读取失败日志: {failure_log_file}")
+        logger.info(f"读取失败日志: {failure_log_file}")
+        
+        # 解析失败日志文件
+        failed_policies = []
+        try:
+            with open(failure_log_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or '|' not in line:
+                        continue
+                    
+                    # 解析日志格式: 时间 | 标题: xxx | 链接: xxx | 发布日期: xxx | 发文字号: xxx | 失败原因: xxx
+                    # 或者: 时间 | 标题: xxx | 链接: xxx | 发布日期: | 发文字号: | 失败原因: xxx
+                    parts = line.split('|')
+                    if len(parts) < 6:
+                        continue
+                    
+                    # 提取信息
+                    title = ""
+                    link = ""
+                    pub_date = ""
+                    doc_number = ""
+                    reason = ""
+                    
+                    for part in parts[1:]:  # 跳过时间部分
+                        part = part.strip()
+                        if part.startswith('标题:'):
+                            title = part.replace('标题:', '').strip()
+                        elif part.startswith('链接:'):
+                            link = part.replace('链接:', '').strip()
+                        elif part.startswith('发布日期:'):
+                            pub_date = part.replace('发布日期:', '').strip()
+                        elif part.startswith('发文字号:'):
+                            doc_number = part.replace('发文字号:', '').strip()
+                        elif part.startswith('失败原因:'):
+                            reason = part.replace('失败原因:', '').strip()
+                    
+                    if title and link:
+                        policy = Policy(
+                            title=title,
+                            pub_date=pub_date,
+                            doc_number=doc_number,
+                            source=link,
+                            link=link,
+                            url=link,
+                            content="",
+                            category="",
+                            level="自然资源部",
+                            validity="",
+                            effective_date="",
+                            crawl_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        )
+                        failed_policies.append((policy, reason))
+        
+        except Exception as e:
+            if callback:
+                callback(f"解析失败日志文件失败: {e}")
+            logger.error(f"解析失败日志文件失败: {e}", exc_info=True)
+            return CrawlProgress()
+        
+        if not failed_policies:
+            if callback:
+                callback("失败日志文件中没有找到失败的政策")
+            logger.info("失败日志文件中没有找到失败的政策")
+            return CrawlProgress()
+        
+        if callback:
+            callback(f"\n找到 {len(failed_policies)} 条失败的政策，开始重试...")
+        logger.info(f"找到 {len(failed_policies)} 条失败的政策，开始重试...")
+        
+        # 初始化进度
+        if not hasattr(self, 'progress') or self.progress is None:
+            self.progress = CrawlProgress()
+            self.progress.start_time = datetime.now()
+        else:
+            original_start_time = self.progress.start_time
+            self.progress = CrawlProgress()
+            self.progress.start_time = original_start_time or datetime.now()
+        
+        self.progress.total_count = len(failed_policies)
+        self._update_progress()
+        
+        # 重试每个失败的政策
+        for i, (policy, original_reason) in enumerate(failed_policies, 1):
+            if self.stop_requested:
+                if callback:
+                    callback("停止重试")
+                logger.info("[停止] 停止重试")
+                break
+            
+            if callback:
+                callback(f"\n重试进度: [{i}/{len(failed_policies)}]")
+            logger.info(f"重试进度: [{i}/{len(failed_policies)}]")
+            
+            self.progress.current_policy_id = policy.id
+            self.progress.current_policy_title = policy.title
+            self._update_progress()
+            
+            if callback:
+                callback(f"重试政策: {policy.title}")
+                callback(f"原失败原因: {original_reason}")
+            
+            success = self.crawl_single_policy(policy, callback)
+            
+            if success:
+                self.progress.completed_count += 1
+                self.progress.completed_policies.append(policy.id)
+                if callback:
+                    callback("   ✓ 重试成功")
+            else:
+                self.progress.failed_count += 1
+                failed_policy_info = {
+                    'id': policy.id,
+                    'title': policy.title,
+                    'link': policy.link or policy.source or policy.url,
+                    'pub_date': policy.pub_date,
+                    'doc_number': policy.doc_number,
+                    'reason': f'重试失败: {original_reason}'
+                }
+                self.progress.failed_policies.append(failed_policy_info)
+                if callback:
+                    callback("   ✗ 重试仍然失败")
+            
+            self._update_progress()
+            time.sleep(self.config.get("request_delay", 2))
+        
+        self.progress.end_time = datetime.now()
+        self._update_progress()
+        
+        if callback:
+            callback("\n重试完成")
+        logger.info("重试完成")
+        logger.info(f"总计: {self.progress.total_count} 条")
+        logger.info(f"成功: {self.progress.completed_count} 条")
+        logger.info(f"失败: {self.progress.failed_count} 条")
+        logger.info(f"成功率: {self.progress.success_rate:.2f}%")
         
         return self.progress
     

@@ -1,6 +1,14 @@
 {
   "data_sources": [
     {
+      "name": "政府信息公开平台",
+      "base_url": "https://gi.mnr.gov.cn/",
+      "search_api": "https://search.mnr.gov.cn/was5/web/search",
+      "ajax_api": "https://search.mnr.gov.cn/was/ajaxdata_jsonp.jsp",
+      "channel_id": "216640",
+      "enabled": true
+    },
+    {
       "name": "政策法规库",
       "base_url": "https://f.mnr.gov.cn/",
       "search_api": "https://search.mnr.gov.cn/was5/web/search",
@@ -9,10 +17,10 @@
       "enabled": true
     }
   ],
-  "base_url": "https://f.mnr.gov.cn/",
+  "base_url": "https://gi.mnr.gov.cn/",
   "search_api": "https://search.mnr.gov.cn/was5/web/search",
   "ajax_api": "https://search.mnr.gov.cn/was/ajaxdata_jsonp.jsp",
-  "channel_id": "174757",
+  "channel_id": "216640",
   "request_delay": 2,
   "retry_delay": 5,
   "max_retries": 3,

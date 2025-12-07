@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-MNR Law Crawler (自然资源部法规爬虫工具) v1.0 - 统一入口
+MNR Law Crawler (自然资源部法规爬虫工具) v2.0 - 统一入口
 GUI和命令行二合一版本
 """
 

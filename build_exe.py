@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+from importlib.util import find_spec
 from pathlib import Path
 
 def build_exe():
@@ -18,10 +19,9 @@ def build_exe():
     print("=" * 60)
     
     # 检查PyInstaller是否安装
-    try:
-        import PyInstaller
+    if find_spec("PyInstaller") is not None:
         print("[OK] PyInstaller 已安装")
-    except ImportError:
+    else:
         print("[INFO] PyInstaller 未安装，正在安装...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
         print("[OK] PyInstaller 安装完成")
@@ -66,11 +66,12 @@ def build_exe():
     print("\n开始打包...")
     print(f"命令: {' '.join(cmd)}")
     print("-" * 60)
+    print("提示: 打包过程可能需要几分钟，请耐心等待...")
+    print("-" * 60)
     
     try:
-        # 执行打包
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print(result.stdout)
+        # 执行打包（实时显示输出）
+        subprocess.run(cmd, check=True)
         
         print("\n" + "=" * 60)
         print("[OK] 打包完成！")
@@ -86,10 +87,7 @@ def build_exe():
         
     except subprocess.CalledProcessError as e:
         print("\n[ERROR] 打包失败！")
-        if e.stderr:
-            print(f"错误信息: {e.stderr}")
-        if e.stdout:
-            print(f"输出信息: {e.stdout}")
+        print(f"返回码: {e.returncode}")
         return False
     
     return True

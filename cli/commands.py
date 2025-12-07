@@ -21,7 +21,7 @@ class CLI:
     def _create_parser(self) -> argparse.ArgumentParser:
         """创建参数解析器"""
         parser = argparse.ArgumentParser(
-            description='MNR Law Crawler (自然资源部法规爬虫工具) v1.0 - 命令行版',
+            description='MNR Law Crawler (自然资源部法规爬虫工具) v2.0 - 命令行版',
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 示例:
@@ -267,7 +267,7 @@ class CLI:
         print("="*60)
         print("MNR Law Crawler (自然资源部法规爬虫工具)")
         print("="*60)
-        print("版本: 1.0.0")
+        print("版本: 2.0.0")
         print("项目名: mnr-law-crawler")
         print("作者: ViVi141")
         print("GitHub: https://github.com/ViVi141/mnr-law-crawler")

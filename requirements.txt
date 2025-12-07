@@ -1,4 +1,4 @@
-# MNR Law Crawler (自然资源部法规爬虫工具) v1.0 - 依赖清单
+# MNR Law Crawler (自然资源部法规爬虫工具) v2.0 - 依赖清单
 
 # 核心依赖
 requests>=2.31.0

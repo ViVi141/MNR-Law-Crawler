@@ -2,7 +2,7 @@
 核心业务逻辑模块
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "ViVi141"
 __project_name__ = "mnr-law-crawler"
 __github_url__ = "https://github.com/ViVi141/mnr-law-crawler"

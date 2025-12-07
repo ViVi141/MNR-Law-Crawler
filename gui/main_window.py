@@ -21,7 +21,7 @@ class MainWindow:
     def __init__(self):
         """初始化主窗口"""
         self.root = tk.Tk()
-        self.root.title("MNR Law Crawler (自然资源部法规爬虫工具) v1.0")
+        self.root.title("MNR Law Crawler (自然资源部法规爬虫工具) v2.0")
         
         # 加载配置
         self.config = Config()
@@ -98,7 +98,7 @@ class MainWindow:
         
         self._setup_logging()
         
-        logging.info("欢迎使用 MNR Law Crawler (自然资源部法规爬虫工具) v1.0")
+        logging.info("欢迎使用 MNR Law Crawler (自然资源部法规爬虫工具) v2.0")
         logging.info("请在\"爬取配置\"选项卡中设置参数，然后点击\"开始爬取\"按钮")
     
     def _on_start_crawl(self, crawl_type: str, **kwargs):
@@ -141,10 +141,7 @@ class MainWindow:
             if crawl_type == 'single':
                 from core import CrawlProgress
                 from datetime import datetime
-                self.crawler.progress = CrawlProgress()
-                self.crawler.progress.start_time = datetime.now()
-                self.crawler.progress.total_count = 1
-                self._update_progress(self.crawler.progress)
+                from urllib.parse import urlparse
                 
                 logging.info("\n[测试模式] 获取第一页政策列表...")
                 policies = self.crawler.search_all_policies(
@@ -158,32 +155,124 @@ class MainWindow:
                 if policies and len(policies) > 0:
                     logging.info(f"获取到 {len(policies)} 条政策")
                     
-                    policy = policies[0]
-                    logging.info(f"\n选择政策: {policy.title}")
+                    # 根据数据源分组，获取每个数据源的第一条政策
+                    source_policies = {}  # {数据源名称: 第一条政策}
                     
-                    self.crawler.progress.current_policy_id = policy.id
-                    self.crawler.progress.current_policy_title = policy.title
+                    # 获取启用的数据源配置
+                    data_sources = self.config.get("data_sources", [])
+                    enabled_sources = [ds for ds in data_sources if ds.get("enabled", True)]
+                    
+                    # 为每个数据源找到第一条政策
+                    used_policies = set()  # 记录已使用的政策索引，避免重复分配
+                    
+                    for data_source in enabled_sources:
+                        source_name = data_source.get("name", "未知数据源")
+                        base_url = data_source.get("base_url", "")
+                        
+                        # 从base_url提取域名（例如：gi.mnr.gov.cn 或 f.mnr.gov.cn）
+                        domain = ""
+                        if base_url:
+                            try:
+                                parsed = urlparse(base_url)
+                                domain = parsed.netloc
+                                # 如果没有netloc，尝试从path中提取
+                                if not domain and parsed.path:
+                                    # 移除协议前缀
+                                    path = parsed.path.strip('/')
+                                    if path:
+                                        domain = path.split('/')[0]
+                            except (ValueError, AttributeError):
+                                domain = ""
+                        
+                        # 查找该数据源的第一条政策（通过URL域名匹配）
+                        matched = False
+                        for idx, policy in enumerate(policies):
+                            if source_name in source_policies:
+                                break  # 已经找到该数据源的第一条政策
+                            
+                            # 跳过已使用的政策
+                            if idx in used_policies:
+                                continue
+                                
+                            policy_url = policy.link or policy.source or policy.url
+                            if policy_url and domain:
+                                # 检查政策URL是否包含该数据源的域名
+                                # 例如：gi.mnr.gov.cn 或 f.mnr.gov.cn
+                                if domain in policy_url:
+                                    source_policies[source_name] = policy
+                                    used_policies.add(idx)
+                                    matched = True
+                                    logging.info(f"[测试模式] 数据源 '{source_name}' 匹配到政策: {policy.title[:50]}...")
+                                    break
+                        
+                        # 如果通过URL没有匹配到，且该数据源还没有政策，则按顺序分配
+                        if not matched and source_name not in source_policies:
+                            for idx, policy in enumerate(policies):
+                                if idx not in used_policies:
+                                    source_policies[source_name] = policy
+                                    used_policies.add(idx)
+                                    logging.info(f"[测试模式] 数据源 '{source_name}' 按顺序分配政策: {policy.title[:50]}...")
+                                    break
+                    
+                    # 如果仍然没有匹配到任何数据源，使用第一条政策作为默认
+                    if not source_policies and policies:
+                        source_policies["默认"] = policies[0]
+                        logging.warning("[测试模式] 无法匹配数据源，使用默认政策")
+                    
+                    # 设置进度总数
+                    total_count = len(source_policies)
+                    self.crawler.progress = CrawlProgress()
+                    self.crawler.progress.start_time = datetime.now()
+                    self.crawler.progress.total_count = total_count
                     self._update_progress(self.crawler.progress)
                     
-                    success = self.crawler.crawl_single_policy(policy, progress_callback)
+                    # 对每个数据源的第一条政策进行爬取
+                    completed_count = 0
+                    failed_count = 0
                     
-                    if success:
-                        self.crawler.progress.completed_count = 1
-                        self.crawler.progress.completed_policies.append(policy.id)
-                        self._show_completion("爬取完成", "单个政策爬取成功！")
-                    else:
-                        self.crawler.progress.failed_count = 1
-                        self.crawler.progress.failed_policies.append({
-                            'id': policy.id,
-                            'title': policy.title,
-                            'reason': '爬取失败'
-                        })
-                        self._show_error("爬取失败", "政策爬取失败，请查看日志")
+                    for source_name, policy in source_policies.items():
+                        logging.info(f"\n[测试模式] 爬取数据源 '{source_name}' 的第一条政策: {policy.title}")
+                        
+                        self.crawler.progress.current_policy_id = policy.id
+                        self.crawler.progress.current_policy_title = policy.title
+                        self._update_progress(self.crawler.progress)
+                        
+                        success = self.crawler.crawl_single_policy(policy, progress_callback)
+                        
+                        if success:
+                            completed_count += 1
+                            self.crawler.progress.completed_count = completed_count
+                            self.crawler.progress.completed_policies.append(policy.id)
+                            logging.info(f"[测试模式] 数据源 '{source_name}' 的第一条政策爬取成功")
+                        else:
+                            failed_count += 1
+                            self.crawler.progress.failed_count = failed_count
+                            # 失败信息已在crawl_single_policy中记录到失败日志
+                            self.crawler.progress.failed_policies.append({
+                                'id': policy.id,
+                                'title': policy.title,
+                                'link': policy.link or policy.source or policy.url,
+                                'pub_date': policy.pub_date,
+                                'doc_number': policy.doc_number,
+                                'reason': f'数据源 {source_name} 爬取失败'
+                            })
+                            logging.error(f"[测试模式] 数据源 '{source_name}' 的第一条政策爬取失败")
+                        
+                        self._update_progress(self.crawler.progress)
                     
                     self.crawler.progress.end_time = datetime.now()
                     self._update_progress(self.crawler.progress)
+                    
+                    if completed_count > 0:
+                        self._show_completion(
+                            "测试完成", 
+                            f"测试模式完成！\n成功: {completed_count} 条\n失败: {failed_count} 条\n\n每个数据源的第一条政策已保存。"
+                        )
+                    else:
+                        self._show_error("测试失败", "所有数据源的政策爬取都失败了，请查看日志")
                 else:
                     self._show_error("未找到政策", "没有找到符合条件的政策")
+                    self.crawler.progress = CrawlProgress()
                     self.crawler.progress.end_time = datetime.now()
                     self._update_progress(self.crawler.progress)
             
@@ -255,34 +344,34 @@ class MainWindow:
     
     def _setup_logging(self):
         """配置日志系统"""
-        class TextHandler(logging.Handler):
-            def __init__(self, text_widget):
-                super().__init__()
-                self.text_widget = text_widget
-            
-            def emit(self, record):
-                msg = self.format(record)
-                def append():
-                    self.text_widget.insert(tk.END, msg + '\n')
-                    self.text_widget.see(tk.END)
-                    self.text_widget.update_idletasks()
-                self.text_widget.after(0, append)
+        from utils.logger import Logger
         
-        logger = logging.getLogger()
-        logger.setLevel(logging.INFO)
-        logger.handlers.clear()
+        # 从配置读取日志设置
+        log_level = self.config.get("log_level", "INFO")
+        log_file = self.config.get("log_file", "crawler.log")
+        log_dir = self.config.get("log_dir", "logs")
         
-        text_handler = TextHandler(self.log_text)
-        text_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(message)s')
-        text_handler.setFormatter(formatter)
-        logger.addHandler(text_handler)
+        # 设置文件和控制台日志
+        Logger.setup_from_config({
+            "log_level": log_level,
+            "log_file": log_file,
+            "log_dir": log_dir
+        })
         
-        if sys.__stdout__:
-            console_handler = logging.StreamHandler(sys.__stdout__)
-            console_handler.setLevel(logging.INFO)
-            console_handler.setFormatter(formatter)
-            logger.addHandler(console_handler)
+        # 设置GUI日志（输出到文本组件）
+        gui_logger = Logger.get_gui_logger(self.log_text, level=log_level)
+        
+        # 将根logger也输出到GUI
+        root_logger = logging.getLogger()
+        root_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+        
+        # 添加GUI处理器到根logger（如果还没有）
+        has_gui_handler = any(isinstance(h, logging.Handler) and hasattr(h, 'text_widget') 
+                             for h in root_logger.handlers)
+        if not has_gui_handler:
+            # 复用GUI logger的handler
+            for handler in gui_logger.handlers:
+                root_logger.addHandler(handler)
     
     def _on_closing(self):
         """窗口关闭事件"""
